@@ -1,0 +1,6 @@
+pandas
+GPy
+numpy
+scikit-learn
+scipy
+
