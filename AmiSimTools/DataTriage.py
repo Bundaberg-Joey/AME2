@@ -60,8 +60,5 @@ class DataTriageCSV(object):
         features, targets = data_set[:, :-self.n_tests], data_set[:, -self.n_tests:]
         return features, targets
 
-#####
 
-
-path = r'C:\Users\crh53\OneDrive\Desktop\PHD_Experiments\E2_AMI_James\Data\Scaled_HCOF_F2.csv'
-params = DataTriageCSV(data_path=path, n_tests=2)
+########################################################################################################################
