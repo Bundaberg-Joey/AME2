@@ -49,19 +49,17 @@ class SimulatedScreenerParallel(object):
         The model needs to perform cheap tests before expensive tests therefore queue is altered to accommodate this:
         i.e. for two tests with n samples [100, 4, 7892, ..., 0, 100, 4, 7892, ..., 0]
 
-        :return: np.array(self.data_params.n_tests * self.num_init, self.data_params.n_tests), each entry is a candidate
-                index and the experiment to be run for that specific instance of the material
+        :return: list[[material, test], ...]
         """
         queue = []
 
         samples = np.random.choice(self.data_params.n, self.num_init, replace=False)  # dont draw candidate twice
-        repeated_samples = np.tile(samples, self.data_params.n_tests)
 
         for test in range(self.data_params.n_tests):
-            for mat in repeated_samples:
-                queue.append((mat, test))
+            for mat in samples:
+                queue.append([mat, test])
 
-        return np.array(queue)
+        return queue
 
 
     @staticmethod
@@ -145,7 +143,7 @@ class SimulatedScreenerParallel(object):
         obtained. If not enough then could potentially cause the model to crash on fitting which ruins the experiment.
         :param model: AMI model
         """
-        complete_experiment = self.highest_test
+        complete_experiment = 4
         if sum(self.data_params.status == complete_experiment) >= self.min_samples:
             model.fit(self.data_params.y_experimental, self.data_params.status)
             self.model_fitted = True
@@ -157,19 +155,10 @@ class SimulatedScreenerParallel(object):
         The worker then runs the material, and the queue is updated accordingly to remove the material.
         The queue is updated to ensure the same material isn't allocated multiple times.
 
-        For simulations with multiple tests, if a material will be tested more than once in the initial allocation then
-        the assertion will fail.
-        This is to prevent a material's expensive test being completed before its cheap test which is unlikely when the
-        tests are significantly different in cost but when they are comparable then this could occur and cause the model
-        to fail which would be difficult to diagnose.
         """
-        if self.data_params.n_tests > 1:
-            test_distance = sum(np.where(self.queued[:, 0] == self.queued[:, 0][0])[0][:2])  # not proud of this
-            assert test_distance > self.nthreads,  'Simultaneous testing will occur which can incur race conditions'
-
         for i in range(self.nthreads):
             ipick, exp = self.queued[0]
-            self.queued = np.delete(self.queued, 0)
+            del self.queued[0]
             self._run_experiment(i, ipick, exp, exp_note='start initial sample')
 
 
@@ -192,7 +181,7 @@ class SimulatedScreenerParallel(object):
             if len(self.queued) > 0:  # if queued materials then sample, else let model sample
                 ipick, exp = self.queued[0]
                 note = 'start initial sample'
-                self.queued = np.delete(self.queued, 0)
+                del self.queued[0]
             else:
                 self._fit_if_safe(model)
                 if self.model_fitted:
