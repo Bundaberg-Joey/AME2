@@ -49,7 +49,12 @@ class DataTriageCSV(object):
         """
         Loads the features and target variables for the AME to assess from a delimited file, assumed csv.
         The default loading removes the first row to allow headed files to be read and so should be specified if not.
-        The delimited file is assumed to be structured with target values as the final right hand column.
+        The delimited file is assumed to be structured with target values as the right hand columns.
+
+        Since multiple tests can be run, the number of "results" columns are used for parsing the results from features.
+        It is assumed that the file is structured with:
+            1) All results as far right hand columns
+            2) The tests proceed from cheapest to most expensive - going left to right along the columns
 
         :return: features: np.array(), `m` by 'n' array which is the feature matrix of the data being modelled
         :return: targets: np.array(), `m` sized array containing the target values for the passed features
