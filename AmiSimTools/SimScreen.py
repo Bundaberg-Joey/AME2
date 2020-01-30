@@ -12,43 +12,69 @@ class SimulatedScreenerParallel(object):
     """Class which uses an AMI model to perform a parallel simulated screening of materials from a dataset
     containing all features and target values for the entries.
 
-    Additionally, this code performs for a two step sampling where cheap and expensive tests can be conducted.
+    Additionally, this code performs for a multi step testing scenario where cheap and expensive tests can be conducted.
     """
 
-    def __init__(self, data_params, test_cost, sim_budget, nthreads, num_init, min_samples):
+    def __init__(self, data_params, test_costs, sim_budget, nthreads, num_init, min_samples):
         """
         :param data_params: DataTriage obj, contains triaged data including `y_true`, `y_experimental` and `status`
-        :param test_cost: float, cost incurred when `assessing` a candidate
+        :param test_costs: dict, {experiment_label:experiment_cost} used for updating simulation budget
         :param sim_budget: float, total amount of resources which can be used for the screening
         :param nthreads: int, number of threads to work on
         :param num_init: int, number of initial random samples to take
         :param min_samples: int, number of materials to be assessed before AMI model can fit
         """
         self.data_params = data_params
-        self.test_cost = test_cost
+        self.test_costs = test_costs
         self.sim_budget = sim_budget
         self.nthreads = nthreads
         self.num_init = num_init
         self.min_samples = min_samples
 
-        assert self.num_init > self.nthreads, F'number of initial samples {self.num_init} < num threads {self.nthreads}'
+        assert self.num_init > self.nthreads * self.data_params.n_tests, 'Ensure queue saturation for race conditions'
 
-        self.workers = [None] * self.nthreads
+        self.untested = 0
+        self.max_cost = max(self.test_costs.values())
+        self.lowest_test, self.highest_test = min(self.test_costs.keys()), max(self.test_costs.keys())
+        self.workers = [(None, None)] * self.nthreads  # [(candidate_being_tested, test_id), ...]
         self.finish_time = np.zeros(self.nthreads)
-        self.queued = np.random.choice(self.data_params.n, self.num_init, replace=False)  # random material indices
+        self.queued = self._determine_queue()
         self.history = []
         self.model_fitted = False
 
+
+    def _determine_queue(self):
+        """
+        Draws n samples from the pool of candidates i.e. [100, 4, 7892, ..., 0]
+        The model needs to perform cheap tests before expensive tests therefore queue is altered to accommodate this:
+        i.e. for two tests with n samples [100, 4, 7892, ..., 0, 100, 4, 7892, ..., 0]
+
+        :return: np.array(self.data_params.n_tests * self.num_init, self.data_params.n_tests), each entry is a candidate
+                index and the experiment to be run for that specific instance of the material
+        """
+        queue = []
+
+        samples = np.random.choice(self.data_params.n, self.num_init, replace=False)  # dont draw candidate twice
+        repeated_samples = np.tile(samples, self.data_params.n_tests)
+
+        for test in range(self.data_params.n_tests):
+            for mat in repeated_samples:
+                queue.append((mat, test))
+
+        return np.array(queue)
+
+
     @staticmethod
-    def determine_material_value(material, true_results):
+    def determine_material_value(material, true_results, test=0):
         """
         Performs pseudo experiment for the AMI where the performance value of the AMI selected material is looked up in
         the loaded data array
         :param material: int, index of the material chosen in the target values
         :param true_results: np.array(), `m` sized array containing the target values for the passed features
+        :param test: int, id of the test being run which will affect the indexing of the array slicing
         :return: determined_value: float, the target value for the passed material index
         """
-        determined_value = true_results[material, 0]  # 0 because column vector indexing
+        determined_value = true_results[material, test]
         return determined_value
 
 
@@ -61,26 +87,29 @@ class SimulatedScreenerParallel(object):
         allowing different keys to be passed depending on time of experiment.
         :param kwargs: dict, contains useful information about the simulated screening
         """
+        print(kwargs)
         self.history.append(kwargs)
 
 
-    def _run_experiment(self, i, ipick, exp_note):
+    def _run_experiment(self, i, ipick, exp, exp_note):
         """
         Passed model selects a material to sample.
         If the material has not been tested before then a cheap test is run, otherwise run expensive.
         After each test, the budget is updated (contained within the model ?) and the worker finish time updated
         :param i: int, index of the worker to perform the task
         :param ipick: int, index of the material to be assessed
+        :param exp: int, label of the experiment to be run, accesses cost records to price experiment
+        :param exp_note: str, a comment to be saved to the logger
         """
-        self.workers[i] = ipick
-        self.sim_budget -= self.test_cost
+        self.workers[i] = (ipick, exp)
+        self.sim_budget -= self.test_costs[exp]
 
-        experiment_length = np.random.uniform(self.test_cost, self.test_cost * 2)
+        experiment_length = np.random.uniform(self.test_costs[exp], self.test_costs[exp] * 2)
         start = self.finish_time[i]
-        self.data_params.status[ipick] = 1  # update status
+        self.data_params.status[ipick] += 1  # update status
         self.finish_time[i] += experiment_length
 
-        self._log_history(note=exp_note, worker=i, candidate=ipick, time=start, exp_len=experiment_length)
+        self._log_history(note=exp_note, worker=i, candidate=ipick, time=start, exp_len=experiment_length, test_id=exp)
 
 
     def _record_experiment(self, final):
@@ -94,17 +123,17 @@ class SimulatedScreenerParallel(object):
         :return: i: int, the index of the worker which is going to finish first
         """
         i = np.argmin(self.finish_time)  # get the worker which is closest to finishing
-        idone = self.workers[i]
+        idone, exp = self.workers[i]
 
-        experimental_value = self.determine_material_value(idone, self.data_params.y_true)
-        self.data_params.y_experimental[idone] = experimental_value
-        self.data_params.status[idone] = 2  # update status
+        experimental_value = self.determine_material_value(idone, self.data_params.y_true, test=exp)
+        self.data_params.y_experimental[idone][exp] = experimental_value
+        self.data_params.status[idone] += 1  # update status
         end = self.finish_time[i]
 
-        self._log_history(note='end', worker=i, candidate=idone, time=end, exp_value=experimental_value)
+        self._log_history(note='end', worker=i, candidate=idone, time=end, exp_value=experimental_value, test_id=exp)
 
         if final:
-            self.workers[i] = None
+            self.workers[i] = (None, None)
             self.finish_time[i] = np.inf
         else:
             return i
@@ -116,7 +145,7 @@ class SimulatedScreenerParallel(object):
         obtained. If not enough then could potentially cause the model to crash on fitting which ruins the experiment.
         :param model: AMI model
         """
-        complete_experiment = 2
+        complete_experiment = self.highest_test
         if sum(self.data_params.status == complete_experiment) >= self.min_samples:
             model.fit(self.data_params.y_experimental, self.data_params.status)
             self.model_fitted = True
@@ -127,12 +156,21 @@ class SimulatedScreenerParallel(object):
         Assigns each of the available workers/threads a random material from the initial queue.
         The worker then runs the material, and the queue is updated accordingly to remove the material.
         The queue is updated to ensure the same material isn't allocated multiple times.
+
+        For simulations with multiple tests, if a material will be tested more than once in the initial allocation then
+        the assertion will fail.
+        This is to prevent a material's expensive test being completed before its cheap test which is unlikely when the
+        tests are significantly different in cost but when they are comparable then this could occur and cause the model
+        to fail which would be difficult to diagnose.
         """
+        if self.data_params.n_tests > 1:
+            test_distance = sum(np.where(self.queued[:, 0] == self.queued[:, 0][0])[0][:2])  # not proud of this
+            assert test_distance > self.nthreads,  'Simultaneous testing will occur which can incur race conditions'
 
         for i in range(self.nthreads):
-            ipick = self.queued[0]
+            ipick, exp = self.queued[0]
             self.queued = np.delete(self.queued, 0)
-            self._run_experiment(i, ipick, 'start initial sample')
+            self._run_experiment(i, ipick, exp, exp_note='start initial sample')
 
 
     def perform_screening(self, model):
@@ -147,23 +185,24 @@ class SimulatedScreenerParallel(object):
         """
         self._initial_materials()
 
-        while self.sim_budget >= self.test_cost:  # spend budget till cant afford any more expensive tests
+        while self.sim_budget >= self.max_cost:  # spend budget till cant afford any more expensive tests
 
             i = self._record_experiment(final=False)
 
             if len(self.queued) > 0:  # if queued materials then sample, else let model sample
-                ipick = self.queued[0]
+                ipick, exp = self.queued[0]
                 note = 'start initial sample'
                 self.queued = np.delete(self.queued, 0)
             else:
                 self._fit_if_safe(model)
                 if self.model_fitted:
-                    ipick = model.pick_next(self.data_params.status)  # fit model and then allow to pick
+                    ipick, exp = model.pick_next(self.data_params.status)  # fit model and then allow to pick
                     note = 'start ami sample'
                 else:
-                    ipick = np.random.choice([i for i in range(self.data_params.n) if self.data_params.status[i] == 0])
+                    available_candidates = np.where(self.data_params.status == self.untested)[0]
+                    ipick, exp = np.random.choice(available_candidates), self.lowest_test
                     note = 'start ami rand sample'
-            self._run_experiment(i, ipick, exp_note=note)
+            self._run_experiment(i, ipick, exp=exp, exp_note=note)
 
         for i in range(self.nthreads):  # finish up any remaining jobs and record their results
             self._record_experiment(final=True)
