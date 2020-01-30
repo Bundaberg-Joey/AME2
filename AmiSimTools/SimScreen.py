@@ -31,14 +31,16 @@ class SimulatedScreenerParallel(object):
         self.num_init = num_init
         self.min_samples = min_samples
 
-        assert self.num_init > self.nthreads * self.data_params.n_tests, 'Ensure queue saturation for race conditions'
+        assert self.num_init >= self.nthreads, 'Ensure queue saturation'
 
         self.untested = 0
         self.max_cost = max(self.test_costs.values())
         self.lowest_test, self.highest_test = min(self.test_costs.keys()), max(self.test_costs.keys())
         self.workers = [(None, None)] * self.nthreads  # [(candidate_being_tested, test_id), ...]
         self.finish_time = np.zeros(self.nthreads)
-        self.queued = self._determine_queue()
+        self.init_samples,self.queued = self._determine_queue()
+        self.count_init_done=0
+        self.init_complete=False
         self.history = []
         self.model_fitted = False
 
@@ -53,13 +55,12 @@ class SimulatedScreenerParallel(object):
         """
         queue = []
 
-        samples = np.random.choice(self.data_params.n, self.num_init, replace=False)  # dont draw candidate twice
+        init_samples = np.random.choice(self.data_params.n, self.num_init, replace=False)  # dont draw candidate twice
 
-        for test in range(self.data_params.n_tests):
-            for mat in samples:
-                queue.append([mat, test])
+        for mat in init_samples:
+            queue.append([mat, self.lowest_test])
 
-        return queue
+        return init_samples,queue
 
 
     @staticmethod
@@ -85,7 +86,6 @@ class SimulatedScreenerParallel(object):
         allowing different keys to be passed depending on time of experiment.
         :param kwargs: dict, contains useful information about the simulated screening
         """
-        print(kwargs)
         self.history.append(kwargs)
 
 
@@ -106,6 +106,13 @@ class SimulatedScreenerParallel(object):
         start = self.finish_time[i]
         self.data_params.status[ipick] += 1  # update status
         self.finish_time[i] += experiment_length
+
+        if self.init_complete==False:
+            if ipick in self.init_samples:
+                if exp==1:
+                    self.count_init_done+=1
+                    if self.count_init_done==self.num_init:
+                        self.init_complete=True
 
         self._log_history(note=exp_note, worker=i, candidate=ipick, time=start, exp_len=experiment_length, test_id=exp)
 
@@ -130,12 +137,16 @@ class SimulatedScreenerParallel(object):
 
         self._log_history(note='end', worker=i, candidate=idone, time=end, exp_value=experimental_value, test_id=exp)
 
+        if self.init_complete==False:
+            if idone in self.init_samples:
+                if exp==0:
+                    self.queued.append([idone,1])
+
         if final:
             self.workers[i] = (None, None)
             self.finish_time[i] = np.inf
         else:
             return i
-
 
     def _fit_if_safe(self, model):
         """
@@ -161,7 +172,6 @@ class SimulatedScreenerParallel(object):
             del self.queued[0]
             self._run_experiment(i, ipick, exp, exp_note='start initial sample')
 
-
     def perform_screening(self, model):
         """
         Performs the full automated screening with multiple workers.
@@ -177,20 +187,32 @@ class SimulatedScreenerParallel(object):
         while self.sim_budget >= self.max_cost:  # spend budget till cant afford any more expensive tests
 
             i = self._record_experiment(final=False)
-
-            if len(self.queued) > 0:  # if queued materials then sample, else let model sample
-                ipick, exp = self.queued[0]
-                note = 'start initial sample'
-                del self.queued[0]
+            
+            if self.init_complete==False:
+                
+                if len(self.queued) > 0:  # if queued materials then sample, else let model sample
+                    ipick, exp = self.queued[0]
+                    note = 'start initial sample'
+                    del self.queued[0]
+                else:
+                    available_cheap = np.where(self.data_params.status == self.untested)[0]
+                    ipick, exp = np.random.choice(available_cheap), self.lowest_test
+                    note = 'start cheap filler'
             else:
+            
                 self._fit_if_safe(model)
                 if self.model_fitted:
                     ipick, exp = model.pick_next(self.data_params.status)  # fit model and then allow to pick
                     note = 'start ami sample'
                 else:
-                    available_candidates = np.where(self.data_params.status == self.untested)[0]
-                    ipick, exp = np.random.choice(available_candidates), self.lowest_test
+                    available_cheap = np.where(self.data_params.status == self.untested)[0]
+                    available_expensive = np.where(self.data_params.status == 2)[0]
+                    if np.random.rand() < 0.1 and len(available_expensive) > 0:  # 50:50 to pick cheap or expensive random
+                        ipick, exp = np.random.choice(available_expensive), 1
+                    else:
+                        ipick, exp = np.random.choice(available_cheap), self.lowest_test
                     note = 'start ami rand sample'
+            
             self._run_experiment(i, ipick, exp=exp, exp_note=note)
 
         for i in range(self.nthreads):  # finish up any remaining jobs and record their results

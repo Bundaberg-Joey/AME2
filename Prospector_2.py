@@ -18,14 +18,15 @@ class prospector2(object):
         """ Initializes by storing all feature values """
         self.X = X
         self.n, self.d = X.shape
-        self.update_counter = 0
+        self.update_counter = 10
         self.updates_per_big_fit = 10
-        self.estimate_tau_counter = 0
+        self.estimate_tau_counter = 10
         self.tau_update = 10
         self.acquisition_function=acquisition_function
         self.y_max = None    
         self.Thompson_p_expensive=0.1 # probability of choosing expensive test when using Thompson sampling 
         self.costs=costs
+
 
     """ incorporates new data """
     """ every 10 turns also fits hyperparameters and inducing points """
@@ -39,8 +40,8 @@ class prospector2(object):
         X=self.X
         self.zdata=[tu+tt,z[tu+tt]]
         self.ydata=[tt,y[tt]]
-        # each 10 fits we update the hyperparameters, otherwise we just update the data which is a lot faster
-        if np.mod(self.update_counter, self.updates_per_big_fit) == 0:
+        # each time we spend 10 we update the hyperparameters, otherwise we just update the data which is a lot faster
+        if self.update_counter>=self.updates_per_big_fit:
             """ upto max_attempts retries if fitting fails """
             done=False
             attempts=0
@@ -178,6 +179,7 @@ class prospector2(object):
                     print('test sample')
                     self.samplesy(nsamplesz=1,nsamplesy=1)
                     done=True
+                    self.update_counter=0
                 except:
                     attempts=attempts+1
         else:
@@ -202,7 +204,7 @@ class prospector2(object):
             self.vy=np.linalg.solve(self.SIG_MMy,self.mu_M_posy-self.muy)
             self.Vy=np.linalg.solve(self.SIG_MMy,np.linalg.solve(self.SIG_MMy,self.SIG_MM_posy).T)
         
-        self.update_counter+=1
+        
         """ 
         key attributes updated by fit 
         
@@ -291,6 +293,8 @@ class prospector2(object):
             exppick=0
             print('enter a valid acquisition function - picking randomly')
         
+        self.update_counter+=self.costs[0]
+            
         return ipick,exppick
         
     
