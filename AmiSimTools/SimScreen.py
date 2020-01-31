@@ -100,21 +100,21 @@ class SimulatedScreenerParallel(object):
         :param exp_note: str, a comment to be saved to the logger
         """
         self.workers[i] = (ipick, exp)
-        self.sim_budget -= self.test_costs[exp]
+        experiment_cost = np.random.uniform(self.test_costs[exp], self.test_costs[exp] * 2)
+        self.sim_budget -= experiment_cost
 
-        experiment_length = np.random.uniform(self.test_costs[exp], self.test_costs[exp] * 2)
         start = self.finish_time[i]
         self.data_params.status[ipick] += 1  # update status
-        self.finish_time[i] += experiment_length
+        self.finish_time[i] += experiment_cost
 
-        if self.init_complete==False:
+        if self.init_complete == False:
             if ipick in self.init_samples:
-                if exp==1:
-                    self.count_init_done+=1
-                    if self.count_init_done==self.num_init:
-                        self.init_complete=True
+                if exp == 1:
+                    self.count_init_done += 1
+                    if self.count_init_done == self.num_init:
+                        self.init_complete = True
 
-        self._log_history(note=exp_note, worker=i, candidate=ipick, time=start, exp_len=experiment_length, test_id=exp)
+        self._log_history(note=exp_note, worker=i, candidate=ipick, time=start, exp_len=experiment_cost, test_id=exp)
 
 
     def _record_experiment(self, final):
