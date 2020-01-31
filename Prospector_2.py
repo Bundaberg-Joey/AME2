@@ -15,14 +15,14 @@ import heapq
 
 class prospector2(object):
 
-    def __init__(self, X,costs,acquisition_function='Thompson',subset_size=500):
+    def __init__(self, X,costs,acquisition_function='Thompson',subset_size=2000):
         """ Initializes by storing all feature values """
         self.X = X
         self.n, self.d = X.shape
         self.update_counter = 10
         self.updates_per_big_fit = 10
         self.estimate_tau_counter = 10
-        self.tau_update = 10
+        self.updates_per_estimate_tau = 10
         self.acquisition_function=acquisition_function
         self.y_max = None    
         self.Thompson_p_expensive=costs[0]/(costs[1]+3*costs[0]) # probability of choosing expensive test when using Thompson sampling 
@@ -34,6 +34,8 @@ class prospector2(object):
         self.alpha=None
         self.p_update_Thompson_Skippy=0.1
         self.N=100
+        self.subset_size=subset_size
+        self.subset=np.random.choice(self.n,self.subset_size,False)
 
     """ incorporates new data """
     """ every 10 turns also fits hyperparameters and inducing points """
@@ -294,43 +296,6 @@ class prospector2(object):
             if np.random.rand()<self.Thompson_p_expensive:
                 return itu,1
         return iuu,0
-
-#    """ samples posterior on subset of dataset """
-#    def samplesz_subset(self,I,nsamples=10):
-#        print('sampling on subset from sparse z model')
-#        samples_M_posz=np.random.multivariate_normal(self.mu_M_posz,self.SIG_MM_posz,nsamples).T
-#        samples_X_posz=np.zeros((self.n,nsamples))*np.nan
-#        samples_X_posz[I,:]=self.muz+np.matmul(self.SIG_XMz[I],np.linalg.solve(self.SIG_MMz,samples_M_posz-self.muz))+self.bz**0.5*np.random.randn(len(I),nsamples)
-#        samples_X_posz[self.zdata[0],:]=np.repeat(self.zdata[1].reshape(-1,1),nsamples,1)
-#        return samples_X_posz
-#
-#    """ samples posterior on subset of full dataset """
-#    def samplesy_subset(self,I,nsamplesz=10,nsamplesy=10,withnoise=True):
-#        samples_X_posz=self.samplesz_subset(I,nsamples=nsamplesz)
-#        print('sampling on subset from sparse y model')
-#        samples_M_posy=np.random.multivariate_normal(self.mu_M_posy,self.SIG_MM_posy,nsamplesy).T
-#        C=np.linalg.solve(self.SIG_MMy,samples_M_posy-self.muy)
-#        samples_X_posy=np.zeros((self.n,nsamplesz*nsamplesy))*np.nan
-#        for j in range(nsamplesz):
-#            samples_X_posy[I,j*nsamplesy:(j+1)*nsamplesy]=self.muy+np.matmul(np.multiply(np.exp(-euclidean_distances(np.divide(samples_X_posz[I,j].reshape(-1,1),self.ly[-1]),np.divide(self.My[:,-1].reshape(-1,1),self.ly[-1]),squared=True)/2),self.ASIG_XMy[I]),C)
-#        if withnoise:
-#            samples_X_posy[I]=samples_X_posy[I]+self.by**0.5*np.random.randn(len(I),nsamplesz*nsamplesy)
-#        samples_X_posy[self.ydata[0],:]=np.repeat(self.ydata[1].reshape(-1,1),nsamplesz*nsamplesy,1)
-#        return samples_X_posz,samples_X_posy
-#
-#    """ Thompson sampling with actions chosen from small subset to reduce cost """
-#    def Thompson_Sample_Subset(self,STATUS):
-#        alpha=self.samplesy_subset(self.subset,nsamplesz=1,nsamplesy=1,withnoise=False)[1]
-#        #self.subset=list(set([self.subset[i] for i in np.argsort(alpha[self.subset].reshape(-1))]+list(np.random.choice(self.n,self.subset_size,False))))
-#        self.subset=list(set([self.subset[i] for i in np.argsort(alpha[self.subset].reshape(-1))]+list(np.random.choice(self.n,int(self.subset_size/2),False))+self.zdata[0]))
-#        uu=[i for i in range(self.n) if STATUS[i]==0]
-#        iuu=uu[np.argmax(alpha[uu])]
-#        tu=[i for i in range(self.n) if STATUS[i]==2]
-#        if len(tu)>0:
-#            itu=tu[np.argmax(alpha[tu])]
-#            if np.random.rand()<self.Thompson_p_expensive:
-#                return itu,1
-#        return iuu,0
     
     """ Thompson sampling """
     """ only updates alpha with probability 0.1 """ 
@@ -404,9 +369,7 @@ class prospector2(object):
             auu=np.dot(qp,np.maximum(Ptau_uu,Ptau_tu))/(self.costs[0]+self.costs[1])
             atu=Ptau_tu/self.costs[1]
             if atu>=auu:
-                self.estimate_tau_counter+=self.costs[1]
-                return itu,1 
-        self.estimate_tau_counter+=self.costs[0]        
+                return itu,1         
         return iuu,0
 
     """ estiamtes probability y(i)>tau for subset of candidates """
@@ -419,10 +382,47 @@ class prospector2(object):
         alpha=np.zeros(self.n)
         for t in range(mt):
             muy,vary=self.predicty_condz_subset(I,muz+qx[t]*sigz)
-            alpha[I]=alpha[I]+(1-norm.cdf((self.taumu-muy)/(self.tauvar+vary+self.by)**0.5))*qp[t]
+            alpha[I]=alpha[I]+(1-norm.cdf((self.tau-muy)/(vary+self.by)**0.5))*qp[t]
         muy,vary=self.predicty_condz_subset(self.zdata[0],self.zdata[1])
-        alpha[self.zdata[0]]=1-norm.cdf((self.taumu-muy)/(self.tauvar+vary+self.by)**0.5)
+        alpha[self.zdata[0]]=1-norm.cdf((self.tau-muy)/(vary+self.by)**0.5)
         return alpha
+
+    """ picks next point to sample """         
+    """ Thompson sampling with Greedy controller using estimated threshold """
+    """ uses a smaller subset to sample from to speed things up """
+    def Greedy_Tau_Subset(self,STATUS,mt=100,xlower=-3,xupper=3,lam=1e-6,ploton=True):  
+        if self.estimate_tau_counter>=self.tau_update:
+            self.estimate_threshold()
+            self.estimate_tau_counter=0
+        uu=[i for i in range(self.n) if STATUS[i]==0]
+        tu=[i for i in range(self.n) if STATUS[i]==2]
+        
+        alpha=self.Greedy_Tau_acquisition_function_Subset(self.subset)
+        
+        self.subset=list(set([uu[i] for i in np.argsort(alpha[uu])[-int(self.subset_size/2):]]+list(np.random.choice(uu,int(self.subset_size/2),False))))
+        
+        iuu=uu[np.argmax(alpha[uu])]
+        if len(tu)>0:
+            itu_tu=np.argmax(alpha[tu])
+            itu=tu[itu_tu]
+            muz_uu,varuu=self.predictz_subset(iuu)
+            sigz_uu=(varuu+self.bz)**0.5
+            qx=np.linspace(xlower,xupper,mt)
+            qp=norm.pdf(qx)
+            qp=qp/np.sum(qp)
+            Muy_uu=np.zeros(mt)
+            Vary_uu=np.zeros(mt)
+            for t in range(mt):
+                Muy_uu[t],Vary_uu[t]=self.predicty_condz_subset(iuu,muz_uu+qx[t]*sigz_uu)
+            Ptau_uu=1-norm.cdf(np.divide(self.tau-Muy_uu,(Vary_uu+self.by)**0.5))
+            muy_tu,vary_tu=self.predicty_condz_subset(itu,self.zdata[1][itu_tu])
+            Ptau_tu=1-norm.cdf(np.divide(self.tau-muy_tu,(vary_tu+self.by)**0.5))
+            auu=np.dot(qp,np.maximum(Ptau_uu,Ptau_tu))/(self.costs[0]+self.costs[1])
+            atu=Ptau_tu/self.costs[1]
+            if atu>=auu:
+                return itu,1 
+        return iuu,0
+
 
     def pick_next(self, STATUS, N=100, nysamples=100):
         """
@@ -441,14 +441,16 @@ class prospector2(object):
             ipick,exppick=self.Thompson_Sample_Skippy(STATUS)
         elif self.acquisition_function == 'Greedy_Tau':
             ipick,exppick=self.Greedy_Tau(STATUS)
+        elif self.acquisition_function == 'Greedy_Tau_Subset':
+            ipick,exppick=self.Greedy_Tau_Subset(STATUS)
         else:
             # if no valid acquisition_function entered then pick at random 
             ipick = np.random.choice([i for i in range(self.n) if STATUS[i] in [0,2]])
             exppick=0
             print('enter a valid acquisition function - picking randomly')
         
-        self.update_counter+=self.costs[0]
-            
+        self.update_counter+=self.costs[exppick]
+        self.estimate_tau_counter+=self.costs[exppick]
         return ipick,exppick
         
     
