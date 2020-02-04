@@ -11,26 +11,35 @@ from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import euclidean_distances
 import GPy
 from scipy.stats import norm
+import heapq
 
 class prospector2(object):
 
-    def __init__(self, X,costs,acquisition_function='Thompson'):
+    def __init__(self, X,costs,acquisition_function='Thompson',subset_size=2000):
         """ Initializes by storing all feature values """
         self.X = X
         self.n, self.d = X.shape
         self.update_counter = 10
         self.updates_per_big_fit = 10
         self.estimate_tau_counter = 10
-        self.tau_update = 10
+        self.updates_per_estimate_tau = 10
         self.acquisition_function=acquisition_function
         self.y_max = None    
-        self.Thompson_p_expensive=0.1 # probability of choosing expensive test when using Thompson sampling 
+        self.Thompson_p_expensive=costs[0]/(costs[1]+3*costs[0]) # probability of choosing expensive test when using Thompson sampling 
         self.costs=costs
-
+        # subset to speed up sampling must always contain all tu points 
+#        self.subset=np.random.choice(self.n,subset_size,False)
+#        self.subset_size=subset_size
+        self.update_Thompson_Skippy=True
+        self.alpha=None
+        self.p_update_Thompson_Skippy=0.1
+        self.N=100
+        self.subset_size=subset_size
+        self.subset=np.random.choice(self.n,self.subset_size,False)
 
     """ incorporates new data """
     """ every 10 turns also fits hyperparameters and inducing points """
-    def fit(self,Y,STATUS,ntop=100,nrecent=100,nmax=400,ntopmu=100,ntopvar=100,nkmeans=300,nkeamnsdata=5000,lam=1e-4,mz=10,mk=1000,max_attempts=5):
+    def fit(self,Y,STATUS,ntop=50,nrecent=50,nmax=400,ntopmu=50,ntopvar=50,nkmeans=100,nkeamnsdata=5000,lam=1e-4,mz=10,mk=1000,max_attempts=5):
         """ put everything in the format we need for rest of this function """
         uu=[i for i in range(self.n) if STATUS[i]==0]
         tu=[i for i in range(self.n) if STATUS[i] in [2,3]]
@@ -180,6 +189,7 @@ class prospector2(object):
                     self.samplesy(nsamplesz=1,nsamplesy=1)
                     done=True
                     self.update_counter=0
+                    self.update_Thompson=True
                 except:
                     attempts=attempts+1
         else:
@@ -241,6 +251,19 @@ class prospector2(object):
         var_X_posy_queary=np.sum(np.multiply(np.matmul(self.Vy,SIG_XMy_queary.T),SIG_XMy_queary.T),0)
         return mu_X_posy_queary,var_X_posy_queary
     
+    """ get y prediction on subset of points given to fit subject to conditional z """        
+    def predicty_condz_subset(self,I,zc,lam=1e-6):
+        SIG_XMy_queary=np.multiply(np.exp(-euclidean_distances(np.divide(zc.reshape(-1,1),self.ly[-1]),np.divide(self.My[:,-1].reshape(-1,1),self.ly[-1]),squared=True)/2),self.ASIG_XMy[I])
+        mu_X_posy_queary=self.muy+np.matmul(SIG_XMy_queary,self.vy)
+        var_X_posy_queary=np.sum(np.multiply(np.matmul(self.Vy,SIG_XMy_queary.T),SIG_XMy_queary.T),0)
+        return mu_X_posy_queary,var_X_posy_queary    
+
+    """ get z prediction on subset of points given to fit """        
+    def predictz_subset(self,I):
+        mu_X_posz=self.muz+np.matmul(self.SIG_XMz[I],self.vz)
+        var_X_posz=np.sum(np.multiply(np.matmul(self.Vz,self.SIG_XMz[I].T),self.SIG_XMz[I].T),0)
+        return mu_X_posz,var_X_posz
+
     """ samples posterior on full dataset """
     def samplesz(self,nsamples=10):
         print('sampling from sparse z model')
@@ -273,6 +296,133 @@ class prospector2(object):
             if np.random.rand()<self.Thompson_p_expensive:
                 return itu,1
         return iuu,0
+    
+    """ Thompson sampling """
+    """ only updates alpha with probability 0.1 """ 
+    def Thompson_Sample_Skippy(self,STATUS):
+        if np.random.rand()<self.p_update_Thompson_Skippy:
+            self.update_Thompson_Skippy=True
+        if self.update_Thompson_Skippy==True:
+            self.alpha=self.samplesy(nsamplesz=1,nsamplesy=1,withnoise=False)[1]
+            self.update_Thompson_Skippy=False
+        uu=[i for i in range(self.n) if STATUS[i]==0]
+        iuu=uu[np.argmax(self.alpha[uu])]
+        tu=[i for i in range(self.n) if STATUS[i]==2]
+        if len(tu)>0:
+            itu=tu[np.argmax(self.alpha[tu])]
+            if np.random.rand()<self.Thompson_p_expensive:
+                self.update_Thompson_Skippy=True
+                return itu,1
+        return iuu,0
+
+    """ estimates tau such that y_i>tau iff i in topN """ 
+    """ this allows easier calculation of greedy acquisition function """        
+    def estimate_threshold(self):
+        print('estimating top '+str(self.N)+' threshold')
+        ysamples=self.samplesy()[1]
+        TAU=np.zeros(ysamples.shape[1])
+        for j in range(ysamples.shape[1]):
+            TAU[j]=heapq.nlargest(self.N,ysamples[:,j])[-1]
+        self.tau=np.median(TAU)
+        print('tau = '+str(self.tau))
+        
+    """ estiamtes probability y(i)>tau for all candidates """
+    def Greedy_Tau_acquisition_function(self,mt=5,xlower=-2,xupper=2):
+        qx=np.linspace(-xlower,xupper,mt)
+        qp=norm.pdf(qx)
+        qp=qp/np.sum(qp)
+        muz,varz=self.predictz_all()
+        muz[self.zdata[0]]=self.zdata[1]
+        sigz=(varz+self.bz)**0.5
+        varz[self.zdata[0]]=0
+        alpha=np.zeros(self.n)
+        for t in range(mt):
+            muy,vary=self.predicty_condz_all(muz+qx[t]*sigz)
+            alpha=alpha+(1-norm.cdf((self.tau-muy)/(vary+self.by)**0.5))*qp[t]
+        return alpha
+
+    """ picks next point to sample """         
+    """ Thompson sampling with Greedy controller using estimated threshold """
+    def Greedy_Tau(self,STATUS,mt=100,xlower=-3,xupper=3,lam=1e-6,ploton=True):  
+        if self.estimate_tau_counter>=self.tau_update:
+            self.estimate_threshold()
+            self.estimate_tau_counter=0
+        uu=[i for i in range(self.n) if STATUS[i]==0]
+        tu=[i for i in range(self.n) if STATUS[i]==2]
+        alpha=self.Greedy_Tau_acquisition_function()
+        iuu=uu[np.argmax(alpha[uu])]
+        if len(tu)>0:
+            itu_tu=np.argmax(alpha[tu])
+            itu=tu[itu_tu]
+            muz_uu,varuu=self.predictz_subset(iuu)
+            sigz_uu=(varuu+self.bz)**0.5
+            qx=np.linspace(xlower,xupper,mt)
+            qp=norm.pdf(qx)
+            qp=qp/np.sum(qp)
+            Muy_uu=np.zeros(mt)
+            Vary_uu=np.zeros(mt)
+            for t in range(mt):
+                Muy_uu[t],Vary_uu[t]=self.predicty_condz_subset(iuu,muz_uu+qx[t]*sigz_uu)
+            Ptau_uu=1-norm.cdf(np.divide(self.tau-Muy_uu,(Vary_uu+self.by)**0.5))
+            muy_tu,vary_tu=self.predicty_condz_subset(itu,self.zdata[1][itu_tu])
+            Ptau_tu=1-norm.cdf(np.divide(self.tau-muy_tu,(vary_tu+self.by)**0.5))
+            auu=np.dot(qp,np.maximum(Ptau_uu,Ptau_tu))/(self.costs[0]+self.costs[1])
+            atu=Ptau_tu/self.costs[1]
+            if atu>=auu:
+                return itu,1         
+        return iuu,0
+
+    """ estiamtes probability y(i)>tau for subset of candidates """
+    def Greedy_Tau_acquisition_function_Subset(self,I,mt=5,xlower=-2,xupper=2):
+        qx=np.linspace(-xlower,xupper,mt)
+        qp=norm.pdf(qx)
+        qp=qp/np.sum(qp)
+        muz,varz=self.predictz_subset(I)
+        sigz=(varz+self.bz)**0.5
+        alpha=np.zeros(self.n)
+        for t in range(mt):
+            muy,vary=self.predicty_condz_subset(I,muz+qx[t]*sigz)
+            alpha[I]=alpha[I]+(1-norm.cdf((self.tau-muy)/(vary+self.by)**0.5))*qp[t]
+        muy,vary=self.predicty_condz_subset(self.zdata[0],self.zdata[1])
+        alpha[self.zdata[0]]=1-norm.cdf((self.tau-muy)/(vary+self.by)**0.5)
+        return alpha
+
+    """ picks next point to sample """         
+    """ Thompson sampling with Greedy controller using estimated threshold """
+    """ uses a smaller subset to sample from to speed things up """
+    def Greedy_Tau_Subset(self,STATUS,mt=100,xlower=-3,xupper=3,lam=1e-6,ploton=True):  
+        if self.estimate_tau_counter>=self.tau_update:
+            self.estimate_threshold()
+            self.estimate_tau_counter=0
+        uu=[i for i in range(self.n) if STATUS[i]==0]
+        tu=[i for i in range(self.n) if STATUS[i]==2]
+        
+        alpha=self.Greedy_Tau_acquisition_function_Subset(self.subset)
+        
+        self.subset=list(set([uu[i] for i in np.argsort(alpha[uu])[-int(self.subset_size/2):]]+list(np.random.choice(uu,int(self.subset_size/2),False))))
+        
+        iuu=uu[np.argmax(alpha[uu])]
+        if len(tu)>0:
+            itu_tu=np.argmax(alpha[tu])
+            itu=tu[itu_tu]
+            muz_uu,varuu=self.predictz_subset(iuu)
+            sigz_uu=(varuu+self.bz)**0.5
+            qx=np.linspace(xlower,xupper,mt)
+            qp=norm.pdf(qx)
+            qp=qp/np.sum(qp)
+            Muy_uu=np.zeros(mt)
+            Vary_uu=np.zeros(mt)
+            for t in range(mt):
+                Muy_uu[t],Vary_uu[t]=self.predicty_condz_subset(iuu,muz_uu+qx[t]*sigz_uu)
+            Ptau_uu=1-norm.cdf(np.divide(self.tau-Muy_uu,(Vary_uu+self.by)**0.5))
+            muy_tu,vary_tu=self.predicty_condz_subset(itu,self.zdata[1][itu_tu])
+            Ptau_tu=1-norm.cdf(np.divide(self.tau-muy_tu,(vary_tu+self.by)**0.5))
+            auu=np.dot(qp,np.maximum(Ptau_uu,Ptau_tu))/(self.costs[0]+self.costs[1])
+            atu=Ptau_tu/self.costs[1]
+            if atu>=auu:
+                return itu,1 
+        return iuu,0
+
 
     def pick_next(self, STATUS, N=100, nysamples=100):
         """
@@ -287,14 +437,20 @@ class prospector2(object):
         """
         if self.acquisition_function == 'Thompson':
             ipick,exppick=self.Thompson_Sample(STATUS)
+        elif self.acquisition_function == 'Thompson_Sample_Skippy':
+            ipick,exppick=self.Thompson_Sample_Skippy(STATUS)
+        elif self.acquisition_function == 'Greedy_Tau':
+            ipick,exppick=self.Greedy_Tau(STATUS)
+        elif self.acquisition_function == 'Greedy_Tau_Subset':
+            ipick,exppick=self.Greedy_Tau_Subset(STATUS)
         else:
             # if no valid acquisition_function entered then pick at random 
             ipick = np.random.choice([i for i in range(self.n) if STATUS[i] in [0,2]])
             exppick=0
             print('enter a valid acquisition function - picking randomly')
         
-        self.update_counter+=self.costs[0]
-            
+        self.update_counter+=self.costs[exppick]
+        self.estimate_tau_counter+=self.costs[exppick]
         return ipick,exppick
         
     
