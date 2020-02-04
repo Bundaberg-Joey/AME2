@@ -22,7 +22,7 @@ class prospector2(object):
         self.update_counter = 10
         self.updates_per_big_fit = 10
         self.estimate_tau_counter = 10
-        self.updates_per_estimate_tau = 10
+        self.tau_update = 10
         self.acquisition_function=acquisition_function
         self.y_max = None    
         self.Thompson_p_expensive=costs[0]/(costs[1]+3*costs[0]) # probability of choosing expensive test when using Thompson sampling 
