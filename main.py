@@ -45,7 +45,7 @@ def save_data(df, meta):
 
 if __name__ == '__main__':
 
-    data_location = r'Scaled_HCOF_F2.csv'
+    data_location = 'HCOF.csv'
     cost_location = 'costs_HCOF.json'
 
     parser = argparse.ArgumentParser()
