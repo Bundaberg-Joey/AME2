@@ -12,6 +12,13 @@ from AmiSimTools.SimScreen import SimulatedScreenerParallel
 
 
 def load_costs(json_path):
+    """
+    For two stage experiments, experiments may have different costs associated with them which need to load into screen.
+    These are just stored in an external `.json` file, the location of which is passed as a flag to this script.
+
+    :param json_path: str, path to json file containing costs
+    :return: costs, dict{int:float}, key is type integer for index slicing and value is float for costing
+    """
     with open(json_path) as f:
         data = json.load(f)
     costs = {int(t): float(v) for t, v in zip(data['test_ids'], data['test_costs'])}
@@ -38,9 +45,8 @@ def save_data(df, meta):
 
 if __name__ == '__main__':
 
-    #data_location = r'C:\Users\crh53\OneDrive\Desktop\PHD_Experiments\E2_AMI_James\Data\Scaled_HCOF_F2.csv'
     data_location = r'Scaled_HCOF_F2.csv'
-    cost_location = 'costs_2.json'
+    cost_location = 'costs_HCOF.json'
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--data_file', action='store', default=data_location, help='path to data file')
@@ -68,8 +74,4 @@ if __name__ == '__main__':
 
     df_sim = pd.DataFrame(sim_history)
     sim_meta = vars(args)
-    save_data(df_sim, sim_meta)
-
-
-
-
+    save_data(df_sim, sim_meta)  # data is saved here rather than by `sim_screen` to preserve passed flags / meta data

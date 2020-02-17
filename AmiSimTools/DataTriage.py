@@ -3,7 +3,6 @@
 This file contains classes used to load and handle the data in order for it to be read from file and into the AMI
 """
 
-__author__ = 'Calum Hand'
 __version__ = '1.0.0'
 
 import warnings

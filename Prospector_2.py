@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Wed Jan 29 14:39:05 2020
-
-@author: Hook
-"""
 
 import numpy as np
 from sklearn.cluster import KMeans
@@ -452,8 +446,3 @@ class prospector2(object):
         self.update_counter+=self.costs[exppick]
         self.estimate_tau_counter+=self.costs[exppick]
         return ipick,exppick
-        
-    
-    
-    
-    

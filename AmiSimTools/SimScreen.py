@@ -2,14 +2,14 @@
 This file contains classes used to run the simulated screenings of the AMI either in series or parallel
 """
 
-__author__ = 'Calum Hand'
-__version__ = '0.0.0'
+__version__ = '1.0.0'
 
 import numpy as np
 
 
 class SimulatedScreenerParallel(object):
-    """Class which uses an AMI model to perform a parallel simulated screening of materials from a dataset
+    """
+    Class which uses an AMI model to perform a parallel simulated screening of materials from a dataset
     containing all features and target values for the entries.
 
     Additionally, this code performs for a multi step testing scenario where cheap and expensive tests can be conducted.
@@ -31,8 +31,6 @@ class SimulatedScreenerParallel(object):
         self.num_init = num_init
         self.min_samples = min_samples
 
-        # assert self.num_init >= self.nthreads, 'Ensure queue saturation'
-
         self.untested = 0
         self.max_cost = max(self.test_costs.values())
         self.lowest_test, self.highest_test = min(self.test_costs.keys()), max(self.test_costs.keys())
@@ -46,9 +44,7 @@ class SimulatedScreenerParallel(object):
 
     def _determine_queue(self):
         """
-        Draws n samples from the pool of candidates i.e. [100, 4, 7892, ..., 0]
-        The model needs to perform cheap tests before expensive tests therefore queue is altered to accommodate this:
-        i.e. for two tests with n samples [100, 4, 7892, ..., 0, 100, 4, 7892, ..., 0]
+        Draws n samples from the pool of candidates i.e. [100, 4, 7892, ..., 0] and queues for screening
 
         :return: list[[material, test], ...]
         """
@@ -66,6 +62,7 @@ class SimulatedScreenerParallel(object):
         """
         Performs pseudo experiment for the AMI where the performance value of the AMI selected material is looked up in
         the loaded data array
+
         :param material: int, index of the material chosen in the target values
         :param true_results: np.array(), `m` sized array containing the target values for the passed features
         :param test: int, id of the test being run which will affect the indexing of the array slicing
@@ -81,6 +78,7 @@ class SimulatedScreenerParallel(object):
         The list of dictionaries can then be readily converted into a pandas DataFrame after screening is complete.
         The start and end of experiments require different details saved, pandas allows for multiple different keywords
         allowing different keys to be passed depending on time of experiment.
+
         :param kwargs: dict, contains useful information about the simulated screening
         """
         self.history.append(kwargs)
